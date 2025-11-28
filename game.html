@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>网页版水果切切乐</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #333;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            touch-action: none; /* 防止移动端滚动 */
+        }
+
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            /* 修改为木头菜板背景 */
+            background-color: #8b5a2b;
+            background-image: 
+                radial-gradient(circle, rgba(0,0,0,0.1), rgba(0,0,0,0.6)), /* 中间亮四周暗的灯光效果 */
+                repeating-linear-gradient(45deg, rgba(255,255,255,0.05) 0px, rgba(255,255,255,0.05) 2px, transparent 2px, transparent 12px), /* 细木纹 */
+                linear-gradient(to bottom, #a0522d, #5c3317); /* 木头底色渐变 */
+            overflow: hidden;
+            box-shadow: inset 0 0 50px rgba(0,0,0,0.5); /* 边缘加深 */
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* UI 覆盖层 */
+        .ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* 让鼠标事件穿透到 Canvas */
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        .score-board {
+            color: #fff;
+            font-size: 24px;
+            font-weight: bold;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+            display: flex;
+            gap: 20px;
+        }
+
+        .lives {
+            color: #ff4757;
+        }
+
+        /* 菜单屏幕 */
+        #start-screen, #game-over-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            z-index: 10;
+            pointer-events: auto;
+        }
+
+        h1 {
+            font-size: 48px;
+            margin-bottom: 10px;
+            color: #ffd700;
+            text-shadow: 0 0 10px rgba(255, 215, 0, 0.5);
+        }
+
+        p {
+            font-size: 18px;
+            color: #ddd;
+            margin-bottom: 30px;
+        }
+
+        button {
+            padding: 15px 40px;
+            font-size: 24px;
+            background: linear-gradient(45deg, #ff6b6b, #ff4757);
+            border: none;
+            border-radius: 50px;
+            color: white;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(255, 71, 87, 0.4);
+            transition: transform 0.1s, box-shadow 0.1s;
+        }
+
+        button:hover {
+            transform: scale(1.05);
+            box-shadow: 0 6px 20px rgba(255, 71, 87, 0.6);
+        }
+
+        button:active {
+            transform: scale(0.95);
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        #final-score {
+            font-size: 60px;
+            font-weight: bold;
+            color: #2ed573;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- 游戏 UI -->
+    <div class="ui-layer">
+        <div class="score-board">
+            <span id="score-display">分数: 0</span>
+            <span id="best-score-display">最高: 0</span>
+        </div>
+        <div class="lives" id="lives-display">❤️❤️❤️</div>
+    </div>
+
+    <!-- 开始界面 -->
+    <div id="start-screen">
+        <h1>🍉 水果切切乐 🍌</h1>
+        <p>滑动鼠标或手指切开水果，千万别切炸弹！</p>
+        <button id="start-btn">开始切水果</button>
+    </div>
+
+    <!-- 结束界面 -->
+    <div id="game-over-screen" class="hidden">
+        <h1>游戏结束</h1>
+        <p>本局得分</p>
+        <div id="final-score">0</div>
+        <button id="restart-btn">再来一局</button>
+    </div>
+</div>
+
+<script>
+    // --- 游戏配置与全局变量 ---
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    // UI 元素
+    const scoreEl = document.getElementById('score-display');
+    const bestScoreEl = document.getElementById('best-score-display');
+    const livesEl = document.getElementById('lives-display');
+    const startScreen = document.getElementById('start-screen');
+    const gameOverScreen = document.getElementById('game-over-screen');
+    const finalScoreEl = document.getElementById('final-score');
+    const startBtn = document.getElementById('start-btn');
+    const restartBtn = document.getElementById('restart-btn');
+
+    // 游戏状态
+    let gameState = 'MENU'; // MENU, PLAYING, GAMEOVER
+    let score = 0;
+    let lives = 3;
+    let gameTime = 0;
+    let difficultyMultiplier = 1;
+    
+    // 实体数组
+    let fruits = [];
+    let particles = [];
+    let trailPoints = [];
+
+    // 水果定义 (半径调大)
+    const FRUIT_TYPES = [
+        { emoji: '🍉', color: '#ff6b6b', points: 10, radius: 50 },
+        { emoji: '🍌', color: '#ffeaa7', points: 15, radius: 45 },
+        { emoji: '🍎', color: '#ff4757', points: 10, radius: 45 },
+        { emoji: '🍍', color: '#f9ca24', points: 20, radius: 50 },
+        { emoji: '🍊', color: '#ff9f43', points: 10, radius: 45 },
+        { emoji: '🥥', color: '#dfe4ea', points: 25, radius: 48 },
+        { emoji: '🥝', color: '#badc58', points: 15, radius: 45 }
+    ];
+
+    const BOMB_TYPE = { emoji: '💣', color: '#2f3542', radius: 50 };
+
+    // 鼠标/触摸追踪
+    const input = { x: 0, y: 0, isDown: false, history: [] };
+
+    // --- 音效系统 (新增) ---
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    let audioCtx;
+
+    function initAudio() {
+        if (!audioCtx) {
+            audioCtx = new AudioContext();
+        }
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
+    }
+
+    // 合成挥刀/切开的声音
+    function playSliceSound(type = 'slice') {
+        if (!audioCtx) return;
+
+        const t = audioCtx.currentTime;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        const filter = audioCtx.createBiquadFilter();
+
+        // 使用噪声来模拟切的声音
+        const bufferSize = audioCtx.sampleRate * 0.1; // 0.1秒
+        const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+            data[i] = Math.random() * 2 - 1;
+        }
+        
+        const noise = audioCtx.createBufferSource();
+        noise.buffer = buffer;
+
+        if (type === 'slice') {
+            // 切中水果：清脆的噗呲声 (高通滤波)
+            filter.type = 'highpass';
+            filter.frequency.setValueAtTime(800, t);
+            gain.gain.setValueAtTime(0.3, t);
+            gain.gain.exponentialRampToValueAtTime(0.01, t + 0.1);
+        } else if (type === 'throw') {
+            // 抛出声音：低沉一点
+            filter.type = 'lowpass';
+            filter.frequency.setValueAtTime(600, t);
+            gain.gain.setValueAtTime(0.1, t);
+            gain.gain.linearRampToValueAtTime(0, t + 0.2);
+        }
+
+        noise.connect(filter);
+        filter.connect(gain);
+        gain.connect(audioCtx.destination);
+        noise.start();
+    }
+
+    // --- 初始化与事件监听 ---
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // 鼠标事件
+    canvas.addEventListener('mousedown', (e) => {
+        input.isDown = true;
+        input.x = e.clientX;
+        input.y = e.clientY;
+        trailPoints = []; // 新的一刀
+    });
+    canvas.addEventListener('mousemove', (e) => {
+        if (input.isDown) {
+            input.x = e.clientX;
+            input.y = e.clientY;
+            addTrailPoint(input.x, input.y);
+            checkCollisions(input.x, input.y);
+        }
+    });
+    window.addEventListener('mouseup', () => {
+        input.isDown = false;
+        trailPoints = [];
+    });
+
+    // 触摸事件 (适配手机)
+    canvas.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        input.isDown = true;
+        input.x = e.touches[0].clientX;
+        input.y = e.touches[0].clientY;
+        trailPoints = [];
+    }, {passive: false});
+    canvas.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        if (input.isDown) {
+            input.x = e.touches[0].clientX;
+            input.y = e.touches[0].clientY;
+            addTrailPoint(input.x, input.y);
+            checkCollisions(input.x, input.y);
+        }
+    }, {passive: false});
+    window.addEventListener('touchend', () => {
+        input.isDown = false;
+        trailPoints = [];
+    });
+
+    // 按钮事件
+    startBtn.addEventListener('click', startGame);
+    restartBtn.addEventListener('click', startGame);
+
+    // 加载最高分
+    let bestScore = localStorage.getItem('fruitNinjaBestScore') || 0;
+    bestScoreEl.innerText = `最高: ${bestScore}`;
+
+    // --- 类定义 ---
+
+    class Fruit {
+        constructor() {
+            this.reset();
+        }
+
+        reset() {
+            // 随机决定是水果还是炸弹 (随着时间推移炸弹概率增加)
+            const isBomb = Math.random() < Math.min(0.1 + (gameTime * 0.0001), 0.3);
+            
+            if (isBomb) {
+                this.type = BOMB_TYPE;
+                this.isBomb = true;
+            } else {
+                this.type = FRUIT_TYPES[Math.floor(Math.random() * FRUIT_TYPES.length)];
+                this.isBomb = false;
+            }
+
+            // 从底部随机位置生成，稍微往中间靠一点，避免开局就贴边
+            this.x = Math.random() * (canvas.width - 200) + 100;
+            this.y = canvas.height + 50;
+            
+            this.gravity = 0.12; // 适中的重力
+            
+            // 抛物线运动参数
+            // X轴速度：如果在左边就往右飞，右边就往左飞
+            const direction = this.x > canvas.width / 2 ? -1 : 1;
+            this.vx = (Math.random() * 3 + 1) * direction; 
+
+            // Y轴速度：根据屏幕高度动态计算，保证最高点大概在屏幕 60%-85% 的高度
+            // 物理公式 v = sqrt(2gh)
+            const targetHeight = canvas.height * (0.6 + Math.random() * 0.25);
+            this.vy = -Math.sqrt(2 * this.gravity * targetHeight);
+            
+            this.rotation = 0;
+            this.rotationSpeed = (Math.random() - 0.5) * 0.2;
+            this.active = true;
+            this.sliced = false;
+
+            // 播放发射声音
+            if (gameState === 'PLAYING') playSliceSound('throw');
+        }
+
+        update() {
+            if (!this.active) return;
+
+            this.x += this.vx;
+            this.y += this.vy;
+            this.vy += this.gravity;
+            this.rotation += this.rotationSpeed;
+
+            // 左右墙壁碰撞检测 (反弹)
+            if (this.x - this.type.radius < 0) {
+                this.x = this.type.radius; // 修正位置
+                this.vx *= -0.6; // 反弹并损失一点速度
+            } else if (this.x + this.type.radius > canvas.width) {
+                this.x = canvas.width - this.type.radius; // 修正位置
+                this.vx *= -0.6; // 反弹
+            }
+
+            // 掉落检测
+            if (this.y > canvas.height + 60) {
+                this.active = false;
+                if (!this.isBomb && !this.sliced && gameState === 'PLAYING') {
+                    loseLife();
+                }
+            }
+        }
+
+        draw() {
+            if (!this.active || this.sliced) return;
+
+            ctx.save();
+            ctx.translate(this.x, this.y);
+            ctx.rotate(this.rotation);
+            ctx.font = "80px Arial"; // 字体变大
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(this.type.emoji, 0, 0); // 正常显示
+            // 调试用：画出碰撞圆
+            // ctx.beginPath();
+            // ctx.arc(0, 0, this.type.radius, 0, Math.PI * 2);
+            // ctx.stroke();
+            ctx.restore();
+        }
+    }
+
+    class Particle {
+        constructor(x, y, color) {
+            this.x = x;
+            this.y = y;
+            this.color = color;
+            const angle = Math.random() * Math.PI * 2;
+            const speed = Math.random() * 5 + 2;
+            this.vx = Math.cos(angle) * speed;
+            this.vy = Math.sin(angle) * speed;
+            this.life = 1.0; // 不透明度
+            this.decay = Math.random() * 0.02 + 0.01;
+            this.gravity = 0.1;
+            this.size = Math.random() * 5 + 3;
+        }
+
+        update() {
+            this.x += this.vx;
+            this.y += this.vy;
+            this.vy += this.gravity;
+            this.life -= this.decay;
+        }
+
+        draw() {
+            ctx.globalAlpha = this.life;
+            ctx.fillStyle = this.color;
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1.0;
+        }
+    }
+
+    class FloatingText {
+        constructor(x, y, text, color) {
+            this.x = x;
+            this.y = y;
+            this.text = text;
+            this.color = color;
+            this.life = 1.0;
+            this.vy = -2;
+        }
+        
+        update() {
+            this.y += this.vy;
+            this.life -= 0.02;
+        }
+        
+        draw() {
+            ctx.globalAlpha = this.life;
+            ctx.fillStyle = this.color;
+            ctx.font = "bold 30px Arial";
+            ctx.fillText(this.text, this.x, this.y);
+            ctx.globalAlpha = 1.0;
+        }
+    }
+
+    // --- 游戏逻辑函数 ---
+
+    function startGame() {
+        initAudio(); // 初始化音频上下文
+
+        score = 0;
+        lives = 3;
+        gameTime = 0;
+        difficultyMultiplier = 1;
+        fruits = [];
+        particles = [];
+        trailPoints = [];
+        updateUI();
+        
+        startScreen.classList.add('hidden');
+        gameOverScreen.classList.add('hidden');
+        
+        gameState = 'PLAYING';
+        gameLoop();
+        spawnLoop();
+    }
+
+    function spawnLoop() {
+        if (gameState !== 'PLAYING') return;
+
+        // 根据难度决定生成间隔 (增加基础间隔，让节奏更慢)
+        const baseInterval = 1500;
+        const interval = Math.max(600, baseInterval - (gameTime * 0.2));
+        
+        // 有几率一次生成多个
+        const count = Math.random() < 0.3 ? 2 : 1;
+
+        for(let i=0; i<count; i++) {
+            fruits.push(new Fruit());
+        }
+
+        // 移除不活跃的水果以释放内存
+        fruits = fruits.filter(f => f.active);
+
+        setTimeout(spawnLoop, interval);
+    }
+
+    function addTrailPoint(x, y) {
+        trailPoints.push({ x, y, life: 1.0 });
+    }
+
+    function updateTrail() {
+        for (let i = trailPoints.length - 1; i >= 0; i--) {
+            trailPoints[i].life -= 0.1;
+            if (trailPoints[i].life <= 0) {
+                trailPoints.splice(i, 1);
+            }
+        }
+    }
+
+    function drawTrail() {
+        if (trailPoints.length < 2) return;
+
+        ctx.beginPath();
+        ctx.moveTo(trailPoints[0].x, trailPoints[0].y);
+
+        for (let i = 1; i < trailPoints.length; i++) {
+            // 平滑曲线
+            const p = trailPoints[i];
+            const prevP = trailPoints[i-1];
+            
+            // 刀光样式
+            ctx.strokeStyle = `rgba(255, 255, 255, ${p.life})`;
+            ctx.lineWidth = p.life * 10;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.lineTo(p.x, p.y);
+        }
+        ctx.stroke();
+
+        // 外发光效果
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = '#00ffff';
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+    }
+
+    function checkCollisions(mouseX, mouseY) {
+        if (trailPoints.length < 2) return; // 需要移动才能切
+
+        fruits.forEach(fruit => {
+            if (fruit.active && !fruit.sliced) {
+                // 简单的距离检测
+                const dx = mouseX - fruit.x;
+                const dy = mouseY - fruit.y;
+                const distance = Math.sqrt(dx*dx + dy*dy);
+
+                if (distance < fruit.type.radius + 10) {
+                    sliceFruit(fruit);
+                }
+            }
+        });
+    }
+
+    function sliceFruit(fruit) {
+        fruit.sliced = true;
+        
+        playSliceSound('slice'); // 播放切开音效
+
+        if (fruit.isBomb) {
+            createExplosion(fruit.x, fruit.y, '#fff');
+            triggerGameOver();
+        } else {
+            // 得分
+            score += fruit.type.points;
+            updateUI();
+            
+            // 特效：汁水粒子
+            for (let i = 0; i < 15; i++) {
+                particles.push(new Particle(fruit.x, fruit.y, fruit.type.color));
+            }
+
+            // 特效：浮动分数
+            particles.push(new FloatingText(fruit.x, fruit.y, `+${fruit.type.points}`, '#fff'));
+
+            // 视觉反馈：水果被切开
+            // 这里我们简单地不再绘制原水果，改为绘制两个"半个"水果向两边飞出
+            // 为了简化单文件代码，我们用更多的粒子代替切开的图像，或者绘制两个半圆
+            createSlicedFruitEffect(fruit);
+        }
+    }
+
+    function createSlicedFruitEffect(fruit) {
+        // 创建两个向反方向飞出的"半个水果" (用文字代替)
+        // 实际上为了简单和性能，我们这里生成大量特定颜色的粒子，
+        // 再加上一个短暂显示的"半个"emoji可能比较复杂，我们用大块碎片代替
+        
+        // 左半边
+        particles.push({
+            x: fruit.x, y: fruit.y,
+            vx: -5, vy: -5, gravity: 0.4,
+            life: 1, color: fruit.type.color,
+            draw: function() {
+                ctx.globalAlpha = this.life;
+                ctx.font = "70px Arial"; // 切开的尸体也变大
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(-0.5);
+                ctx.fillText(fruit.type.emoji, -10, 0); // 偏移模拟切开
+                ctx.restore();
+                ctx.globalAlpha = 1;
+                this.x += this.vx; this.y += this.vy; this.vy += this.gravity; this.life -= 0.03;
+            },
+            update: function() {} // Dummy
+        });
+
+        // 右半边
+        particles.push({
+            x: fruit.x, y: fruit.y,
+            vx: 5, vy: -5, gravity: 0.4,
+            life: 1, color: fruit.type.color,
+            draw: function() {
+                ctx.globalAlpha = this.life;
+                ctx.font = "70px Arial"; // 切开的尸体也变大
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(0.5);
+                ctx.fillText(fruit.type.emoji, 10, 0);
+                ctx.restore();
+                ctx.globalAlpha = 1;
+                this.x += this.vx; this.y += this.vy; this.vy += this.gravity; this.life -= 0.03;
+            },
+            update: function() {} // Dummy
+        });
+    }
+
+    function createExplosion(x, y, color) {
+        // 炸弹爆炸特效
+        for (let i = 0; i < 50; i++) {
+            const p = new Particle(x, y, '#ff0000');
+            p.vx *= 3;
+            p.vy *= 3;
+            particles.push(p);
+        }
+        
+        // 屏幕闪白
+        ctx.fillStyle = 'white';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
+    function loseLife() {
+        lives--;
+        updateUI();
+        if (lives <= 0) {
+            triggerGameOver();
+        }
+    }
+
+    function updateUI() {
+        scoreEl.innerText = `分数: ${score}`;
+        let hearts = '';
+        for(let i=0; i<lives; i++) hearts += '❤️';
+        livesEl.innerText = hearts;
+    }
+
+    function triggerGameOver() {
+        gameState = 'GAMEOVER';
+        finalScoreEl.innerText = score;
+        
+        if (score > bestScore) {
+            bestScore = score;
+            localStorage.setItem('fruitNinjaBestScore', bestScore);
+            bestScoreEl.innerText = `最高: ${bestScore}`;
+        }
+        
+        gameOverScreen.classList.remove('hidden');
+    }
+
+    // --- 主循环 ---
+    function gameLoop() {
+        if (gameState !== 'PLAYING' && particles.length === 0) return;
+
+        // 清空画布
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.2)'; // 留下一点残影轨迹让动作更流畅
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        gameTime++;
+        difficultyMultiplier = 1 + (gameTime / 1000);
+
+        // 更新和绘制水果
+        fruits.forEach(fruit => {
+            fruit.update();
+            fruit.draw();
+        });
+
+        // 更新和绘制粒子
+        for (let i = particles.length - 1; i >= 0; i--) {
+            let p = particles[i];
+            if (p.update) p.update(); // 某些特殊对象有自定义update
+            else {
+                // Duck typing fallback for simple particles
+            }
+            
+            if (p.draw) p.draw();
+            else if (p instanceof Particle) p.draw();
+
+            if (p.life <= 0) {
+                particles.splice(i, 1);
+            }
+        }
+
+        // 刀光轨迹
+        updateTrail();
+        drawTrail();
+
+        requestAnimationFrame(gameLoop);
+    }
+    
+    // 初始画面渲染
+    resize();
+    ctx.fillStyle = "#fff";
+    ctx.font = "20px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText("准备好了吗？", canvas.width/2, canvas.height/2);
+
+</script>
+</body>
+</html>
